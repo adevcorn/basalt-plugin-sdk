@@ -117,6 +117,18 @@ pub struct AgentMetadata {
     /// Args for resuming a prior session.
     /// Use `{session_id}` and `{prompt}` as placeholders.
     pub resume_cont_args: Vec<String>,
+    /// Preferred Basalt execution tier for this launcher.
+    pub execution_tier: AgentExecutionTier,
+    /// Symbolic workspace capabilities this agent expects from the host.
+    pub workspace_capabilities: Vec<String>,
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentExecutionTier {
+    StructuredDirect = 1,
+    MountedWorkspace = 2,
+    Compatibility = 3,
 }
 
 /// One parsed event produced by `agent_parse_line`.
@@ -191,6 +203,9 @@ pub fn encode_diagnostics(diags: &[Diagnostic]) -> Vec<u8> {
 ///   per arg: [arg_len: u16 LE][arg bytes]
 /// [resume_cont_arg_count: u16 LE]
 ///   per arg: [arg_len: u16 LE][arg bytes]
+/// [execution_tier:       u8]
+/// [workspace_cap_count:  u16 LE]
+///   per cap: [cap_len: u16 LE][cap bytes]
 /// ```
 pub fn encode_agent_metadata(m: &AgentMetadata) -> Vec<u8> {
     let mut out = Vec::new();
@@ -199,6 +214,8 @@ pub fn encode_agent_metadata(m: &AgentMetadata) -> Vec<u8> {
     write_str_list16(&mut out, &m.args);
     write_str_list16(&mut out, &m.resume_new_args);
     write_str_list16(&mut out, &m.resume_cont_args);
+    out.push(m.execution_tier as u8);
+    write_str_list16(&mut out, &m.workspace_capabilities);
     out
 }
 
@@ -462,7 +479,7 @@ pub mod prelude {
     pub use crate::basalt_plugin_meta;
     pub use crate::{
         alloc_bytes, encode_agent_metadata, encode_agent_parse_output, encode_diagnostics,
-        free_bytes, pack_output, AgentEvent, AgentMetadata, Diagnostic, Severity,
+        free_bytes, pack_output, AgentEvent, AgentExecutionTier, AgentMetadata, Diagnostic, Severity,
         BASALT_PLUGIN_API_VERSION, CAP_AGENT_LAUNCHER, CAP_CANVAS_DECO, CAP_CODE_ACTIONS,
         CAP_DIAGNOSTICS, CAP_EVENTS, CAP_FILE_TRANSFORM, CAP_HOVER, CAP_LAYOUT, CAP_PROJECT_MODEL,
         CAP_THEME, CAP_UI_PANELS,
