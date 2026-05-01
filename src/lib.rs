@@ -9,7 +9,9 @@
 //! 2. [`basalt_plugin`] proc-macro — wraps a hook function with the correct FFI
 //!    signature and packed-u64 return convention.
 //! 3. Helper types: [`Diagnostic`], [`Severity`], [`encode_diagnostics`], [`pack_output`],
-//!    [`AgentMetadata`], [`AgentEvent`], [`encode_agent_metadata`], [`encode_agent_parse_output`].
+//!    [`AgentMetadata`], [`AgentEvent`], [`encode_agent_metadata`], [`encode_agent_parse_output`],
+//!    [`ReviewActionDescriptor`], [`ReviewActionExecutionPlan`], [`encode_review_actions`],
+//!    [`encode_review_action_plan`].
 //!
 //! # Packed-u64 output ABI
 //!
@@ -29,6 +31,7 @@
 //!     hook_flags: CAP_DIAGNOSTICS,
 //!     provides: "diagnostics",
 //!     requires: "",
+//!     optional_requires: "",
 //!     file_globs: "**/*.rs",
 //!     activates_on: "",
 //! }
@@ -53,6 +56,8 @@ pub const CAP_PROJECT_MODEL: u64 = 1 << 8;
 pub const CAP_HOVER: u64 = 1 << 9;
 
 pub const CAP_AGENT_LAUNCHER: u64 = 1 << 10;
+pub const CAP_REVIEW_ACTIONS: u64 = 1 << 13;
+pub const CAP_API_INDEX: u64 = 1 << 14;
 
 pub const BASALT_PLUGIN_API_VERSION: u32 = 1;
 
@@ -131,6 +136,44 @@ pub enum AgentExecutionTier {
     Compatibility = 3,
 }
 
+// ── Review action types ──────────────────────────────────────────────────────
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewActionKind {
+    Test = 1,
+    Build = 2,
+    Lint = 3,
+    FormatCheck = 4,
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewActionCwdMode {
+    SessionWorkspace = 1,
+    RepoRoot = 2,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReviewActionDescriptor {
+    pub id: String,
+    pub title: String,
+    pub kind: ReviewActionKind,
+    pub ecosystem: String,
+    pub command_preview: String,
+    pub mutates_workspace: bool,
+    pub priority: u16,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReviewActionExecutionPlan {
+    pub executable: String,
+    pub args: Vec<String>,
+    pub env: Vec<(String, String)>,
+    pub cwd_mode: ReviewActionCwdMode,
+    pub output_category: String,
+}
+
 /// One parsed event produced by `agent_parse_line`.
 ///
 /// Vendor IDs are agent-internal string identifiers (tool_id, item_id, toolCallId, etc.)
@@ -143,7 +186,7 @@ pub enum AgentEvent {
         vendor_id: String,
         /// Short display label (e.g. "Read foo.swift", "Git commit").
         tool: String,
-        /// Category string: "read" | "write" | "run" | "build" | "git" | "search" | "web" | "tool" | "message" | "error".
+        /// Canonical category string: "read" | "write" | "create" | "delete" | "move" | "list" | "search" | "run" | "build" | "test" | "git" | "message" | "thought" | "diagnostic".
         category: String,
         /// Raw command or JSON string for tooltip / detail view.
         raw_cmd: String,
@@ -216,6 +259,63 @@ pub fn encode_agent_metadata(m: &AgentMetadata) -> Vec<u8> {
     write_str_list16(&mut out, &m.resume_cont_args);
     out.push(m.execution_tier as u8);
     write_str_list16(&mut out, &m.workspace_capabilities);
+    out
+}
+
+/// Encode a list of review-action descriptors into the Basalt wire format.
+///
+/// ```text
+/// [action_count:    u16 LE]
+/// per action:
+///   [id_len:          u16 LE][id bytes]
+///   [title_len:       u16 LE][title bytes]
+///   [kind:            u8]
+///   [ecosystem_len:   u16 LE][ecosystem bytes]
+///   [preview_len:     u16 LE][command_preview bytes]
+///   [mutates:         u8]
+///   [priority:        u16 LE]
+/// ```
+pub fn encode_review_actions(actions: &[ReviewActionDescriptor]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let count = actions.len().min(0xFFFF) as u16;
+    out.extend_from_slice(&count.to_le_bytes());
+    for action in &actions[..count as usize] {
+        write_str16(&mut out, &action.id);
+        write_str16(&mut out, &action.title);
+        out.push(action.kind as u8);
+        write_str16(&mut out, &action.ecosystem);
+        write_str16(&mut out, &action.command_preview);
+        out.push(if action.mutates_workspace { 1 } else { 0 });
+        out.extend_from_slice(&action.priority.to_le_bytes());
+    }
+    out
+}
+
+/// Encode a review-action execution plan into the Basalt wire format.
+///
+/// ```text
+/// [executable_len: u16 LE][executable bytes]
+/// [arg_count:      u16 LE]
+///   per arg: [arg_len: u16 LE][arg bytes]
+/// [env_count:      u16 LE]
+///   per pair:
+///     [key_len: u16 LE][key bytes]
+///     [val_len: u16 LE][val bytes]
+/// [cwd_mode:       u8]
+/// [output_len:     u16 LE][output_category bytes]
+/// ```
+pub fn encode_review_action_plan(plan: &ReviewActionExecutionPlan) -> Vec<u8> {
+    let mut out = Vec::new();
+    write_str16(&mut out, &plan.executable);
+    write_str_list16(&mut out, &plan.args);
+    let env_count = plan.env.len().min(0xFFFF) as u16;
+    out.extend_from_slice(&env_count.to_le_bytes());
+    for (key, value) in &plan.env[..env_count as usize] {
+        write_str16(&mut out, key);
+        write_str16(&mut out, value);
+    }
+    out.push(plan.cwd_mode as u8);
+    write_str16(&mut out, &plan.output_category);
     out
 }
 
@@ -387,6 +487,7 @@ pub use basalt_plugin_sdk_macros::basalt_plugin;
 ///     hook_flags:        CAP_DIAGNOSTICS,
 ///     provides:          "diagnostics",
 ///     requires:          "",
+///     optional_requires: "",
 ///     file_globs:        "**/*.rs",
 ///     activates_on:      "**/Cargo.toml",
 ///     activation_events: "workspace_opened",
@@ -411,10 +512,34 @@ macro_rules! basalt_plugin_meta {
         activates_on:      $activates_on:expr,
         activation_events: $activation_events:expr $(,)?
     ) => {
+        basalt_plugin_sdk::basalt_plugin_meta! {
+            name:              $name,
+            version:           $version,
+            hook_flags:        $hook_flags,
+            provides:          $provides,
+            requires:          $requires,
+            optional_requires: "",
+            file_globs:        $file_globs,
+            activates_on:      $activates_on,
+            activation_events: $activation_events,
+        }
+    };
+    (
+        name:              $name:expr,
+        version:           $version:expr,
+        hook_flags:        $hook_flags:expr,
+        provides:          $provides:expr,
+        requires:          $requires:expr,
+        optional_requires: $optional_requires:expr,
+        file_globs:        $file_globs:expr,
+        activates_on:      $activates_on:expr,
+        activation_events: $activation_events:expr $(,)?
+    ) => {
         static __BASALT_PLUGIN_NAME: &[u8] = concat!($name, "\0").as_bytes();
         static __BASALT_PLUGIN_VERSION: &[u8] = concat!($version, "\0").as_bytes();
         static __BASALT_PROVIDES: &[u8] = concat!($provides, "\0").as_bytes();
         static __BASALT_REQUIRES: &[u8] = concat!($requires, "\0").as_bytes();
+        static __BASALT_OPTIONAL_REQUIRES: &[u8] = concat!($optional_requires, "\0").as_bytes();
         static __BASALT_FILE_GLOBS: &[u8] = concat!($file_globs, "\0").as_bytes();
         static __BASALT_ACTIVATES_ON: &[u8] = concat!($activates_on, "\0").as_bytes();
         static __BASALT_ACTIVATION_EVENTS: &[u8] = concat!($activation_events, "\0").as_bytes();
@@ -431,6 +556,7 @@ macro_rules! basalt_plugin_meta {
             file_globs_ptr: u32,
             activates_on_ptr: u32,
             activation_events_ptr: u32,
+            optional_requires_ptr: u32,
         }
 
         static mut __BASALT_META: __BasaltPluginMetaRecord = __BasaltPluginMetaRecord {
@@ -444,6 +570,7 @@ macro_rules! basalt_plugin_meta {
             file_globs_ptr: 0,
             activates_on_ptr: 0,
             activation_events_ptr: 0,
+            optional_requires_ptr: 0,
         };
 
         #[unsafe(no_mangle)]
@@ -453,6 +580,7 @@ macro_rules! basalt_plugin_meta {
                 __BASALT_META.version_ptr = __BASALT_PLUGIN_VERSION.as_ptr() as u32;
                 __BASALT_META.provides_ptr = __BASALT_PROVIDES.as_ptr() as u32;
                 __BASALT_META.requires_ptr = __BASALT_REQUIRES.as_ptr() as u32;
+                __BASALT_META.optional_requires_ptr = __BASALT_OPTIONAL_REQUIRES.as_ptr() as u32;
                 __BASALT_META.file_globs_ptr = __BASALT_FILE_GLOBS.as_ptr() as u32;
                 __BASALT_META.activates_on_ptr = __BASALT_ACTIVATES_ON.as_ptr() as u32;
                 __BASALT_META.activation_events_ptr = __BASALT_ACTIVATION_EVENTS.as_ptr() as u32;
@@ -479,9 +607,11 @@ pub mod prelude {
     pub use crate::basalt_plugin_meta;
     pub use crate::{
         alloc_bytes, encode_agent_metadata, encode_agent_parse_output, encode_diagnostics,
-        free_bytes, pack_output, AgentEvent, AgentExecutionTier, AgentMetadata, Diagnostic, Severity,
-        BASALT_PLUGIN_API_VERSION, CAP_AGENT_LAUNCHER, CAP_CANVAS_DECO, CAP_CODE_ACTIONS,
-        CAP_DIAGNOSTICS, CAP_EVENTS, CAP_FILE_TRANSFORM, CAP_HOVER, CAP_LAYOUT, CAP_PROJECT_MODEL,
-        CAP_THEME, CAP_UI_PANELS,
+        encode_review_action_plan, encode_review_actions, free_bytes, pack_output, AgentEvent,
+        AgentExecutionTier, AgentMetadata, Diagnostic, ReviewActionCwdMode, ReviewActionDescriptor,
+        ReviewActionExecutionPlan, ReviewActionKind, Severity, BASALT_PLUGIN_API_VERSION,
+        CAP_AGENT_LAUNCHER, CAP_API_INDEX, CAP_CANVAS_DECO, CAP_CODE_ACTIONS, CAP_DIAGNOSTICS,
+        CAP_EVENTS, CAP_FILE_TRANSFORM, CAP_HOVER, CAP_LAYOUT, CAP_PROJECT_MODEL,
+        CAP_REVIEW_ACTIONS, CAP_THEME, CAP_UI_PANELS,
     };
 }
