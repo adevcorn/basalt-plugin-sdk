@@ -11,6 +11,7 @@
 //! | `build_project_model`  | `basalt_build_project_model`  | `(root_ptr, root_len: i32) -> u64`                                               |
 //! | `hover`                | `basalt_hover`                | `(src_ptr, src_len, path_ptr, path_len, byte_offset: i32) -> u64`                |
 //! | `agent_metadata`       | `basalt_agent_metadata`       | `() -> u64`                                                                      |
+//! | `agent_environment`    | `basalt_agent_environment`    | `() -> u64`                                                                      |
 //! | `agent_parse_line`     | `basalt_agent_parse_line`     | `(line_ptr, line_len, state_ptr, state_len: i32) -> u64`                         |
 //! | `api_index`            | `basalt_api_index`            | `(root_ptr, root_len: i32) -> u64`                                               |
 //! | `review_actions`       | `basalt_review_actions`       | `(root_ptr, root_len, workspace_ptr, workspace_len: i32) -> u64`                 |
@@ -34,6 +35,7 @@ pub fn basalt_plugin(_attr: TokenStream, item: TokenStream) -> TokenStream {
         "build_project_model" => generate_build_project_model_wrapper(&input),
         "hover" => generate_hover_wrapper(&input),
         "agent_metadata" => generate_agent_metadata_wrapper(&input),
+        "agent_environment" => generate_agent_environment_wrapper(&input),
         "agent_parse_line" => generate_agent_parse_line_wrapper(&input),
         "api_index" => generate_api_index_wrapper(&input),
         "review_actions" => generate_review_actions_wrapper(&input),
@@ -43,7 +45,7 @@ pub fn basalt_plugin(_attr: TokenStream, item: TokenStream) -> TokenStream {
             // Unknown name — emit the function unchanged with a compile_error.
             let msg = format!(
                 "#[basalt_plugin] does not recognise function name `{fn_name_str}`. \
-                 Supported names: diagnose, build_project_model, hover, agent_metadata, agent_parse_line, api_index, review_actions, review_action_plan, review_action_parse_line."
+                 Supported names: diagnose, build_project_model, hover, agent_metadata, agent_environment, agent_parse_line, api_index, review_actions, review_action_plan, review_action_parse_line."
             );
             quote! {
                 #input
@@ -154,6 +156,26 @@ fn generate_agent_metadata_wrapper(input: &ItemFn) -> proc_macro2::TokenStream {
         pub extern "C" fn basalt_agent_metadata() -> u64 {
             let meta = #fn_name();
             basalt_plugin_sdk::pack_output(basalt_plugin_sdk::encode_agent_metadata(&meta))
+        }
+    }
+}
+
+/// Generate the `basalt_agent_environment` export.
+///
+/// Expects:  `fn agent_environment() -> Vec<(&'static str, &'static str)>`
+/// Generates: `extern "C" fn basalt_agent_environment() -> u64`
+///
+/// The host treats this export as optional — it is safe to omit it entirely.
+/// Return an empty `Vec` if there are no environment hints to inject.
+fn generate_agent_environment_wrapper(input: &ItemFn) -> proc_macro2::TokenStream {
+    let fn_name = &input.sig.ident;
+    quote! {
+        #input
+
+        #[unsafe(no_mangle)]
+        pub extern "C" fn basalt_agent_environment() -> u64 {
+            let pairs = #fn_name();
+            basalt_plugin_sdk::pack_output(basalt_plugin_sdk::encode_agent_environment(&pairs))
         }
     }
 }

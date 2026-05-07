@@ -426,6 +426,26 @@ fn write_str_list16(out: &mut Vec<u8>, list: &[String]) {
     }
 }
 
+/// Encode a list of environment variable key/value pairs into the Basalt
+/// agent-environment wire format consumed by `basalt_agent_environment`.
+///
+/// ```text
+/// [count: u16 LE]
+/// repeated count times:
+///   [key_len: u16 LE][key bytes: UTF-8]
+///   [val_len: u16 LE][val bytes: UTF-8]
+/// ```
+pub fn encode_agent_environment(env: &[(&str, &str)]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let count = env.len().min(0xFFFF) as u16;
+    out.extend_from_slice(&count.to_le_bytes());
+    for (key, val) in env.iter().take(count as usize) {
+        write_str16(&mut out, key);
+        write_str16(&mut out, val);
+    }
+    out
+}
+
 // ── Allocator helpers (used by pack_output and the generated allocate/deallocate exports) ─
 
 /// Allocate `len` uninitialized bytes on the heap and return a raw pointer.
@@ -606,12 +626,12 @@ pub mod prelude {
     pub use crate::basalt_plugin;
     pub use crate::basalt_plugin_meta;
     pub use crate::{
-        alloc_bytes, encode_agent_metadata, encode_agent_parse_output, encode_diagnostics,
-        encode_review_action_plan, encode_review_actions, free_bytes, pack_output, AgentEvent,
-        AgentExecutionTier, AgentMetadata, Diagnostic, ReviewActionCwdMode, ReviewActionDescriptor,
-        ReviewActionExecutionPlan, ReviewActionKind, Severity, BASALT_PLUGIN_API_VERSION,
-        CAP_AGENT_LAUNCHER, CAP_API_INDEX, CAP_CANVAS_DECO, CAP_CODE_ACTIONS, CAP_DIAGNOSTICS,
-        CAP_EVENTS, CAP_FILE_TRANSFORM, CAP_HOVER, CAP_LAYOUT, CAP_PROJECT_MODEL,
-        CAP_REVIEW_ACTIONS, CAP_THEME, CAP_UI_PANELS,
+        alloc_bytes, encode_agent_environment, encode_agent_metadata, encode_agent_parse_output,
+        encode_diagnostics, encode_review_action_plan, encode_review_actions, free_bytes,
+        pack_output, AgentEvent, AgentExecutionTier, AgentMetadata, Diagnostic,
+        ReviewActionCwdMode, ReviewActionDescriptor, ReviewActionExecutionPlan, ReviewActionKind,
+        Severity, BASALT_PLUGIN_API_VERSION, CAP_AGENT_LAUNCHER, CAP_API_INDEX, CAP_CANVAS_DECO,
+        CAP_CODE_ACTIONS, CAP_DIAGNOSTICS, CAP_EVENTS, CAP_FILE_TRANSFORM, CAP_HOVER, CAP_LAYOUT,
+        CAP_PROJECT_MODEL, CAP_REVIEW_ACTIONS, CAP_THEME, CAP_UI_PANELS,
     };
 }

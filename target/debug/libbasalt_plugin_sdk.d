@@ -1,0 +1,1 @@
+/Users/aavu/repositories/github.com/basalt-plugin-sdk/target/debug/libbasalt_plugin_sdk.rlib: /Users/aavu/repositories/github.com/basalt-plugin-sdk/macros/src/lib.rs /Users/aavu/repositories/github.com/basalt-plugin-sdk/src/lib.rs
