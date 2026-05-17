@@ -59,7 +59,167 @@ pub const CAP_AGENT_LAUNCHER: u64 = 1 << 10;
 pub const CAP_REVIEW_ACTIONS: u64 = 1 << 13;
 pub const CAP_API_INDEX: u64 = 1 << 14;
 
+/// Plugin exports `basalt_capability_handle` for native capability dispatch.
+pub const CAP_CAPABILITY_HANDLE: u64 = 1 << 17;
+
 pub const BASALT_PLUGIN_API_VERSION: u32 = 1;
+
+// ── Capability invoke support ───────────────────────────────────────────────
+
+/// Error codes returned by the host capability runtime.
+/// These match the host-side error namespace (reserved: -1 to -7).
+#[repr(i64)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapabilityInvokeError {
+    /// No provider registered for this capability.
+    NotFound = -1,
+    /// Malformed capability identifier.
+    InvalidCapability = -2,
+    /// Provider plugin returned an error or trapped.
+    ProviderFailed = -3,
+    /// Native WASM provider exceeded fuel budget.
+    Timeout = -4,
+    /// Circular dependency detected in invocation chain.
+    DependencyCycle = -5,
+    /// Required dependency not available.
+    DependencyMissing = -6,
+    /// Malformed request payload.
+    InvalidRequest = -7,
+}
+
+impl CapabilityInvokeError {
+    /// Convert a raw host return code to a typed error.
+    /// Returns `None` for non-negative values (success).
+    pub fn from_raw(code: i64) -> Option<Self> {
+        if code >= 0 {
+            return None;
+        }
+        match code {
+            -1 => Some(Self::NotFound),
+            -2 => Some(Self::InvalidCapability),
+            -3 => Some(Self::ProviderFailed),
+            -4 => Some(Self::Timeout),
+            -5 => Some(Self::DependencyCycle),
+            -6 => Some(Self::DependencyMissing),
+            -7 => Some(Self::InvalidRequest),
+            _other => Some(Self::ProviderFailed), // unknown host error → ProviderFailed
+        }
+    }
+}
+
+/// Invoke a capability and return the response bytes.
+///
+/// # Arguments
+/// * `capability` — Capability identifier string (e.g. `"parse.call-sites@swift/v1"`).
+/// * `request` — Opaque request payload bytes.
+///
+/// # Returns
+/// * `Ok(Vec<u8>)` — Response payload from the provider.
+/// * `Err(CapabilityInvokeError)` — Host-level error.
+///
+/// # Memory Safety
+/// This function handles the full lifecycle: invoke → copy → free.
+/// Even on copy failure, the host response handle is properly freed.
+pub fn invoke_capability(capability: &str, request: &[u8]) -> Result<Vec<u8>, CapabilityInvokeError> {
+    extern "C" {
+        fn basalt_capability_invoke(
+            cap_ptr: *const u8,
+            cap_len: usize,
+            req_ptr: *const u8,
+            req_len: usize,
+        ) -> i64;
+        fn basalt_capability_copy_response(
+            handle: i32,
+            out_ptr: *mut u8,
+            out_cap: i32,
+        ) -> i32;
+        fn basalt_capability_free_response(handle: i32);
+    }
+
+    let packed = unsafe {
+        basalt_capability_invoke(
+            capability.as_ptr(),
+            capability.len(),
+            request.as_ptr(),
+            request.len(),
+        )
+    };
+
+    // Negative values are host errors.
+    if packed < 0 {
+        return Err(CapabilityInvokeError::from_raw(packed).unwrap_or(CapabilityInvokeError::ProviderFailed));
+    }
+
+    let handle = (packed >> 32) as i32;
+    let len = (packed & 0xFFFFFFFF) as usize;
+
+    if len == 0 {
+        unsafe {
+            basalt_capability_free_response(handle);
+        }
+        return Ok(Vec::new());
+    }
+
+    // Allocate buffer and copy.
+    let mut buf = Vec::with_capacity(len);
+    // SAFETY: Vec::with_capacity guarantees `len` bytes of uninitialized memory.
+    // We fill it entirely via copy_response before any read.
+    let copy_result = unsafe {
+        basalt_capability_copy_response(handle, buf.as_mut_ptr(), len as i32)
+    };
+
+    // Always free the host handle, even on copy failure.
+    unsafe {
+        basalt_capability_free_response(handle);
+    }
+
+    match copy_result {
+        n if n >= 0 => {
+            // SAFETY: copy_response returned n >= 0, meaning n bytes were copied.
+            // We verified n == len above (host returns exact size on success).
+            unsafe {
+                buf.set_len(len);
+            }
+            Ok(buf)
+        }
+        -1 => Err(CapabilityInvokeError::ProviderFailed), // invalid handle
+        -2 => Err(CapabilityInvokeError::ProviderFailed), // insufficient capacity
+        _ => Err(CapabilityInvokeError::ProviderFailed),
+    }
+}
+
+/// Pack a successful response into the `(ptr << 32) | len` format.
+///
+/// Use this as the return value from `basalt_capability_handle` implementations.
+/// The host will read `len` bytes from `ptr` and then call `deallocate(ptr, len)`.
+pub fn pack_success(data: Vec<u8>) -> i64 {
+    let len = data.len();
+    if len == 0 {
+        return 0;
+    }
+    let ptr = alloc_bytes(len);
+    // SAFETY: ptr is freshly allocated with capacity `len`.
+    unsafe {
+        core::ptr::copy_nonoverlapping(data.as_ptr(), ptr, len);
+    }
+    ((ptr as i64) << 32) | (len as i64)
+}
+
+/// Pack an empty success response (zero bytes).
+///
+/// Returns `0`, signalling to the host that there is no payload to read.
+pub fn pack_empty() -> i64 {
+    0
+}
+
+/// Pack a provider-defined error code.
+///
+/// Provider error codes are in the range `-1000` to `-1999`.
+/// The host maps these to `ProviderFailed("provider returned N")`.
+pub fn pack_error(code: i64) -> i64 {
+    debug_assert!(code <= -1000 && code >= -1999, "provider error codes must be in -1000..-1999");
+    code
+}
 
 // ── Diagnostic types ────────────────────────────────────────────────────────
 
@@ -126,6 +286,31 @@ pub struct AgentMetadata {
     pub execution_tier: AgentExecutionTier,
     /// Symbolic workspace capabilities this agent expects from the host.
     pub workspace_capabilities: Vec<String>,
+    /// Communication protocol the agent uses.
+    ///
+    /// - `Cli` (default): spawn per turn, prompt via CLI args, read stdout until exit.
+    /// - `Rpc`: spawn once, prompt via stdin JSON commands, long-lived process.
+    pub protocol: AgentProtocol,
+}
+
+/// Communication protocol used by an agent.
+///
+/// This determines how Basalt orchestrates the agent process:
+///
+/// | Protocol | Stdin | Stdout | Lifecycle |
+/// |----------|-------|--------|----------|
+/// | `Cli` | Closed | NDJSON until exit | Spawn per turn |
+/// | `Rpc` | JSONL commands | NDJSON events | Long-lived process |
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AgentProtocol {
+    /// Spawn per turn, prompt via CLI args, read stdout until process exits.
+    /// Default for backward compatibility with existing agent plugins.
+    #[default]
+    Cli = 0,
+    /// Spawn once, prompt via stdin RPC commands (`{"type":"prompt",...}`),
+    /// events stream on stdout as NDJSON. Process stays alive between turns.
+    Rpc = 1,
 }
 
 #[repr(u8)]
@@ -134,6 +319,23 @@ pub enum AgentExecutionTier {
     StructuredDirect = 1,
     MountedWorkspace = 2,
     Compatibility = 3,
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentSettingsField {
+    pub kind: AgentSettingsFieldKind,
+    pub key: String,
+    pub label: String,
+    pub description: String,
+    pub placeholder: String,
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentSettingsFieldKind {
+    Unknown = 0,
+    ExecutablePath = 1,
+    Secret = 2,
 }
 
 // ── Review action types ──────────────────────────────────────────────────────
@@ -249,6 +451,7 @@ pub fn encode_diagnostics(diags: &[Diagnostic]) -> Vec<u8> {
 /// [execution_tier:       u8]
 /// [workspace_cap_count:  u16 LE]
 ///   per cap: [cap_len: u16 LE][cap bytes]
+/// [protocol:             u8]   — 0 = Cli, 1 = Rpc
 /// ```
 pub fn encode_agent_metadata(m: &AgentMetadata) -> Vec<u8> {
     let mut out = Vec::new();
@@ -259,6 +462,32 @@ pub fn encode_agent_metadata(m: &AgentMetadata) -> Vec<u8> {
     write_str_list16(&mut out, &m.resume_cont_args);
     out.push(m.execution_tier as u8);
     write_str_list16(&mut out, &m.workspace_capabilities);
+    out.push(m.protocol as u8);
+    out
+}
+
+/// Encode a list of [`AgentSettingsField`] values into the Basalt wire format.
+///
+/// ```text
+/// [count: u16 LE]
+/// per field:
+///   [kind: u8]
+///   [key: str16]
+///   [label: str16]
+///   [description: str16]
+///   [placeholder: str16]
+/// ```
+pub fn encode_agent_settings_schema(fields: &[AgentSettingsField]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let count = fields.len().min(0xFFFF) as u16;
+    out.extend_from_slice(&count.to_le_bytes());
+    for f in &fields[..count as usize] {
+        out.push(f.kind as u8);
+        write_str16(&mut out, &f.key);
+        write_str16(&mut out, &f.label);
+        write_str16(&mut out, &f.description);
+        write_str16(&mut out, &f.placeholder);
+    }
     out
 }
 
@@ -456,9 +685,13 @@ pub fn alloc_bytes(len: usize) -> *mut u8 {
     if len == 0 {
         return core::ptr::null_mut();
     }
-    let mut v = Vec::<u8>::with_capacity(len);
-    let ptr = v.as_mut_ptr();
-    core::mem::forget(v);
+    use std::alloc::{Layout, alloc, handle_alloc_error};
+    let layout = Layout::array::<u8>(len).expect("allocation layout failed");
+    // SAFETY: layout is valid, len > 0.
+    let ptr = unsafe { alloc(layout) };
+    if ptr.is_null() {
+        handle_alloc_error(layout);
+    }
     ptr
 }
 
@@ -468,8 +701,10 @@ pub fn alloc_bytes(len: usize) -> *mut u8 {
 /// `ptr` must have been returned by `alloc_bytes(len)`.
 pub unsafe fn free_bytes(ptr: *mut u8, len: usize) {
     if !ptr.is_null() && len > 0 {
-        // Reconstruct the Vec and drop it to release the allocation.
-        drop(unsafe { Vec::from_raw_parts(ptr, 0, len) });
+        use std::alloc::{Layout, dealloc};
+        let layout = Layout::array::<u8>(len).expect("free layout failed");
+        // SAFETY: ptr was allocated with the same layout via alloc.
+        unsafe { dealloc(ptr, layout) };
     }
 }
 
@@ -627,11 +862,108 @@ pub mod prelude {
     pub use crate::basalt_plugin_meta;
     pub use crate::{
         alloc_bytes, encode_agent_environment, encode_agent_metadata, encode_agent_parse_output,
-        encode_diagnostics, encode_review_action_plan, encode_review_actions, free_bytes,
-        pack_output, AgentEvent, AgentExecutionTier, AgentMetadata, Diagnostic,
-        ReviewActionCwdMode, ReviewActionDescriptor, ReviewActionExecutionPlan, ReviewActionKind,
-        Severity, BASALT_PLUGIN_API_VERSION, CAP_AGENT_LAUNCHER, CAP_API_INDEX, CAP_CANVAS_DECO,
-        CAP_CODE_ACTIONS, CAP_DIAGNOSTICS, CAP_EVENTS, CAP_FILE_TRANSFORM, CAP_HOVER, CAP_LAYOUT,
-        CAP_PROJECT_MODEL, CAP_REVIEW_ACTIONS, CAP_THEME, CAP_UI_PANELS,
+        encode_agent_settings_schema, encode_diagnostics, encode_review_action_plan,
+        encode_review_actions, free_bytes, pack_output, pack_success, pack_empty, pack_error,
+        invoke_capability, CapabilityInvokeError,
+        AgentEvent, AgentExecutionTier,
+        AgentMetadata, AgentProtocol, AgentSettingsField, AgentSettingsFieldKind, Diagnostic, ReviewActionCwdMode,
+        ReviewActionDescriptor, ReviewActionExecutionPlan, ReviewActionKind, Severity,
+        BASALT_PLUGIN_API_VERSION, CAP_AGENT_LAUNCHER, CAP_API_INDEX, CAP_CANVAS_DECO,
+        CAP_CAPABILITY_HANDLE, CAP_CODE_ACTIONS, CAP_DIAGNOSTICS, CAP_EVENTS, CAP_FILE_TRANSFORM,
+        CAP_HOVER, CAP_LAYOUT, CAP_PROJECT_MODEL, CAP_REVIEW_ACTIONS, CAP_THEME, CAP_UI_PANELS,
     };
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cap_capability_handle_flag() {
+        assert_eq!(CAP_CAPABILITY_HANDLE, 1 << 17);
+        // Verify no overlap with existing flags (0-16 occupied)
+        assert!(CAP_CAPABILITY_HANDLE > CAP_API_INDEX);
+    }
+
+    #[test]
+    fn capability_invoke_error_from_raw() {
+        assert!(CapabilityInvokeError::from_raw(0).is_none());
+        assert!(CapabilityInvokeError::from_raw(42).is_none());
+        assert_eq!(CapabilityInvokeError::from_raw(-1), Some(CapabilityInvokeError::NotFound));
+        assert_eq!(CapabilityInvokeError::from_raw(-2), Some(CapabilityInvokeError::InvalidCapability));
+        assert_eq!(CapabilityInvokeError::from_raw(-3), Some(CapabilityInvokeError::ProviderFailed));
+        assert_eq!(CapabilityInvokeError::from_raw(-4), Some(CapabilityInvokeError::Timeout));
+        assert_eq!(CapabilityInvokeError::from_raw(-5), Some(CapabilityInvokeError::DependencyCycle));
+        assert_eq!(CapabilityInvokeError::from_raw(-6), Some(CapabilityInvokeError::DependencyMissing));
+        assert_eq!(CapabilityInvokeError::from_raw(-7), Some(CapabilityInvokeError::InvalidRequest));
+        assert_eq!(CapabilityInvokeError::from_raw(-99), Some(CapabilityInvokeError::ProviderFailed));
+    }
+
+    #[test]
+    fn pack_empty_returns_zero() {
+        assert_eq!(pack_empty(), 0);
+    }
+
+    #[test]
+    fn pack_success_returns_packed_value() {
+        let data: Vec<u8> = vec![1, 2, 3, 4];
+        let packed = pack_success(data);
+        // On wasm32, packed > 0. On 64-bit native, the packed format
+        // truncates the pointer to 32 bits, so we only verify the length field.
+        let len = (packed & 0xFFFFFFFF) as usize;
+        assert_eq!(len, 4);
+        // The pointer field is non-zero on both wasm32 and native.
+        let ptr_field = (packed >> 32) as u32;
+        assert_ne!(ptr_field, 0);
+    }
+
+    #[test]
+    fn pack_success_data_roundtrip() {
+        // Test the alloc/copy/free path directly (bypassing pack_success
+        // which uses the wasm32-specific packed format).
+        let data: Vec<u8> = vec![10, 20, 30, 40];
+        let ptr = alloc_bytes(data.len());
+        assert!(!ptr.is_null());
+        unsafe {
+            core::ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
+            let slice = core::slice::from_raw_parts(ptr, data.len());
+            assert_eq!(slice, &[10, 20, 30, 40]);
+            free_bytes(ptr, data.len());
+        }
+    }
+
+    #[test]
+    fn alloc_free_roundtrip() {
+        let ptr = alloc_bytes(100);
+        assert!(!ptr.is_null());
+        unsafe {
+            core::ptr::write_bytes(ptr, 0xAB, 100);
+            free_bytes(ptr, 100);
+        }
+    }
+
+    #[test]
+    fn pack_success_empty_data_returns_zero() {
+        assert_eq!(pack_success(Vec::new()), 0);
+    }
+
+    #[test]
+    fn pack_error_returns_negative_code() {
+        assert_eq!(pack_error(-1001), -1001);
+        assert_eq!(pack_error(-1500), -1500);
+        assert_eq!(pack_error(-1999), -1999);
+    }
+
+    #[test]
+    fn capability_error_repr_values() {
+        assert_eq!(CapabilityInvokeError::NotFound as i64, -1);
+        assert_eq!(CapabilityInvokeError::InvalidCapability as i64, -2);
+        assert_eq!(CapabilityInvokeError::ProviderFailed as i64, -3);
+        assert_eq!(CapabilityInvokeError::Timeout as i64, -4);
+        assert_eq!(CapabilityInvokeError::DependencyCycle as i64, -5);
+        assert_eq!(CapabilityInvokeError::DependencyMissing as i64, -6);
+        assert_eq!(CapabilityInvokeError::InvalidRequest as i64, -7);
+    }
 }
