@@ -967,3 +967,78 @@ mod tests {
         assert_eq!(CapabilityInvokeError::InvalidRequest as i64, -7);
     }
 }
+
+// ── Facts Module ─────────────────────────────────────────────────────────────
+
+pub mod facts {
+    #[cfg(feature = "serde")]
+    use serde::{Serialize, Deserialize};
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+    pub enum SymbolKind {
+        Variable, Module, Struct, Class, Interface, Enum, Trait, Function, Method,
+        Macro, Property, Field, Constructor, String, Number, Boolean, Array, Object,
+        Key, Null, EnumMember, Constant, Event, Operator, TypeParameter, Type
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+    pub enum MutationKind { StateWrite, StateDelete, StateRename }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+    pub enum ControlFlowKind { Function, Conditional, Loop, Switch, Closure }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+    pub enum IOKind { FileRead, FileWrite, Network, StdIO }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+    pub enum AsyncBoundaryKind { Spawn, Await, ActorIsolation }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+    pub enum MutationTarget { Variable }
+
+    #[derive(Clone, Debug)]
+    #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+    pub enum SemanticFact {
+        DeclareSymbol { kind: SymbolKind, offset: u32, length: u32, name: String, qualified_name: Option<String> },
+        ReferenceSymbol { offset: u32, length: u32, target: String },
+        Contains { offset: u32, declared_offset: u32, parent: String },
+        Extends { offset: u32, child: String, parent: String },
+        Implements { offset: u32, type_name: String, contract: String },
+        Calls { caller_offset: u32, caller_length: u32, callee: String },
+        Mutation { target: MutationTarget, kind: MutationKind, offset: u32, length: u32, name: String },
+        ControlFlowEnter { kind: ControlFlowKind, offset: u32, length: u32 },
+        ControlFlowExit { offset: u32, length: u32 },
+        IOOperation { io_kind: IOKind, offset: u32, length: u32, descriptor: Option<String> },
+        AsyncBoundary { boundary_kind: AsyncBoundaryKind, offset: u32, length: u32 },
+        ImportModule { offset: u32, length: u32, module_path: String, alias: Option<String> },
+        DependsOn { offset: u32, length: u32, dependency: String },
+    }
+
+    pub const MAGIC: u32 = 0;
+    pub const VERSION: u32 = 0;
+
+    #[cfg(feature = "serde")]
+    pub fn serialize_facts(facts: &[SemanticFact]) -> Vec<u8> {
+        bincode::serialize(facts).unwrap_or_default()
+    }
+
+    #[cfg(feature = "serde")]
+    pub fn deserialize_facts(bytes: &[u8]) -> Result<Vec<SemanticFact>, String> {
+        if bytes.is_empty() {
+            return Ok(Vec::new());
+        }
+        bincode::deserialize(bytes).map_err(|e| e.to_string())
+    }
+
+    #[cfg(not(feature = "serde"))]
+    pub fn serialize_facts(_facts: &[SemanticFact]) -> Vec<u8> { vec![] }
+
+    #[cfg(not(feature = "serde"))]
+    pub fn deserialize_facts(_bytes: &[u8]) -> Result<Vec<SemanticFact>, String> { Ok(vec![]) }
+}
