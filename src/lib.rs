@@ -56,8 +56,11 @@ pub const CAP_PROJECT_MODEL: u64 = 1 << 8;
 pub const CAP_HOVER: u64 = 1 << 9;
 
 pub const CAP_AGENT_LAUNCHER: u64 = 1 << 10;
+pub const CAP_SEMANTIC_TOKENS: u64 = 1 << 11;
 pub const CAP_REVIEW_ACTIONS: u64 = 1 << 13;
 pub const CAP_API_INDEX: u64 = 1 << 14;
+/// Plugin provides `semantic-facts@*` capability (consumes parse capabilities).
+pub const CAP_SEMANTIC_FACTS: u64 = 1 << 16;
 
 /// Plugin exports `basalt_capability_handle` for native capability dispatch.
 pub const CAP_CAPABILITY_HANDLE: u64 = 1 << 17;
@@ -120,6 +123,12 @@ impl CapabilityInvokeError {
 /// # Memory Safety
 /// This function handles the full lifecycle: invoke → copy → free.
 /// Even on copy failure, the host response handle is properly freed.
+///
+/// # Platform
+/// Only available when compiled for WASM targets (plugins).
+/// The host imports `basalt_capability_invoke`, `basalt_capability_copy_response`,
+/// and `basalt_capability_free_response` are provided by the host at runtime.
+#[cfg(target_arch = "wasm32")]
 pub fn invoke_capability(capability: &str, request: &[u8]) -> Result<Vec<u8>, CapabilityInvokeError> {
     extern "C" {
         fn basalt_capability_invoke(
@@ -855,23 +864,65 @@ macro_rules! basalt_plugin_meta {
     };
 }
 
+// ── Retrieval-chunk v2 contract (visibility / test flags) ────────────────────
+//
+// Mirrors the host-side contract in `basalt-core/src/parser.rs` and
+// `basalt-core/src/semantic_layer.rs`. Parser plugins that emit
+// `basalt_retrieval_chunks_v2` write 106-byte records: the v1 104-byte record
+// plus a flags byte at offset 104 and a reserved byte at offset 105.
+//
+// Flags byte layout:
+// - bits 0-1: visibility (`CHUNK_VIS_*`; matches `SEMANTIC_VIS_*` on the host)
+// - bit 2 (`CHUNK_FLAG_TEST`): test-attributed symbol
+// - bits 3-7: reserved, must be 0
+
+/// v2 retrieval-chunk record size in bytes (v1 104 + flags + reserved).
+pub const RETRIEVAL_CHUNK_BYTES_V2: usize = 106;
+/// Offset of the flags byte within a v2 record.
+pub const RETRIEVAL_FLAGS_OFFSET_V2: usize = 104;
+
+/// Visibility unknown (e.g. grammar carries no modifier info).
+pub const CHUNK_VIS_UNKNOWN: u8 = 0;
+/// Publicly visible symbol.
+pub const CHUNK_VIS_PUBLIC: u8 = 1;
+/// Assembly/internal visibility (e.g. C# `internal`).
+pub const CHUNK_VIS_INTERNAL: u8 = 2;
+/// Private (or otherwise non-public) symbol.
+pub const CHUNK_VIS_PRIVATE: u8 = 3;
+/// Test-attributed symbol (e.g. `[Fact]` / `#[test]`-marked declaration).
+pub const CHUNK_FLAG_TEST: u8 = 0x04;
+
+/// Pack a v2 chunk flags byte from a visibility value and test marker.
+pub fn encode_chunk_flags(visibility: u8, is_test: bool) -> u8 {
+    (visibility & 0x03) | if is_test { CHUNK_FLAG_TEST } else { 0 }
+}
+
 // ── Prelude ───────────────────────────────────────────────────────────────────
 
 pub mod prelude {
     pub use crate::basalt_plugin;
     pub use crate::basalt_plugin_meta;
+    pub use crate::facts::{
+        serialize_facts, deserialize_facts, SemanticFact, SymbolKind, MutationTarget, MutationKind,
+        ControlFlowKind, IOKind, AsyncBoundaryKind, MAGIC, VERSION,
+    };
     pub use crate::{
         alloc_bytes, encode_agent_environment, encode_agent_metadata, encode_agent_parse_output,
-        encode_agent_settings_schema, encode_diagnostics, encode_review_action_plan,
+        encode_agent_settings_schema, encode_chunk_flags, encode_diagnostics, encode_review_action_plan,
         encode_review_actions, free_bytes, pack_output, pack_success, pack_empty, pack_error,
-        invoke_capability, CapabilityInvokeError,
+        CapabilityInvokeError,
         AgentEvent, AgentExecutionTier,
         AgentMetadata, AgentProtocol, AgentSettingsField, AgentSettingsFieldKind, Diagnostic, ReviewActionCwdMode,
         ReviewActionDescriptor, ReviewActionExecutionPlan, ReviewActionKind, Severity,
         BASALT_PLUGIN_API_VERSION, CAP_AGENT_LAUNCHER, CAP_API_INDEX, CAP_CANVAS_DECO,
         CAP_CAPABILITY_HANDLE, CAP_CODE_ACTIONS, CAP_DIAGNOSTICS, CAP_EVENTS, CAP_FILE_TRANSFORM,
-        CAP_HOVER, CAP_LAYOUT, CAP_PROJECT_MODEL, CAP_REVIEW_ACTIONS, CAP_THEME, CAP_UI_PANELS,
+        CAP_HOVER, CAP_LAYOUT, CAP_PROJECT_MODEL, CAP_REVIEW_ACTIONS, CAP_SEMANTIC_FACTS,
+        CAP_SEMANTIC_TOKENS, CAP_THEME, CAP_UI_PANELS,
+        CHUNK_FLAG_TEST, CHUNK_VIS_INTERNAL, CHUNK_VIS_PRIVATE, CHUNK_VIS_PUBLIC,
+        CHUNK_VIS_UNKNOWN, RETRIEVAL_CHUNK_BYTES_V2, RETRIEVAL_FLAGS_OFFSET_V2,
     };
+    #[cfg(target_arch = "wasm32")]
+    pub use crate::invoke_capability;
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
