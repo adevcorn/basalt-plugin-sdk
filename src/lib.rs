@@ -347,6 +347,55 @@ pub enum AgentSettingsFieldKind {
     Secret = 2,
 }
 
+// ── Agent Launch Configuration Types ───────────────────────────────────────
+
+/// Standard tool capabilities that the host can request to disable or restrict.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum StandardTool {
+    Read,
+    Write,
+    Execute,
+    Question,
+}
+
+/// Host request payload passed to `basalt_agent_prepare_launch`.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AgentLaunchRequest {
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub mcp_url: Option<String>,
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Vec::is_empty"))]
+    pub disabled_tools: Vec<StandardTool>,
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub model: Option<String>,
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub variant: Option<String>,
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    pub workspace_path: Option<String>,
+}
+
+/// Workspace file to write into the shadow directory before launch.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentWorkspaceFile {
+    pub relative_path: String,
+    pub content: String,
+}
+
+/// Preparation output returned by `basalt_agent_prepare_launch`.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AgentLaunchPreparation {
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Vec::is_empty"))]
+    pub extra_args: Vec<String>,
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "std::collections::HashMap::is_empty"))]
+    pub env: std::collections::HashMap<String, String>,
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Vec::is_empty"))]
+    pub workspace_files: Vec<AgentWorkspaceFile>,
+}
+
 // ── Review action types ──────────────────────────────────────────────────────
 
 #[repr(u8)]
@@ -413,7 +462,7 @@ pub enum AgentEvent {
     /// Append additional text to an existing entry's label (used for streaming message chunks).
     AppendToEntry { vendor_id: String, text: String },
     /// The agent session terminated.
-    SessionEnded { success: bool },
+    SessionEnded { success: bool, error: Option<String> },
     /// The agent emitted its remote session / thread ID (for resume).
     SessionIDAvailable(String),
 }
@@ -634,9 +683,15 @@ pub fn encode_agent_parse_output(new_state: &[u8], events: &[AgentEvent]) -> Vec
                 write_str16(&mut out, vendor_id);
                 write_str16(&mut out, text);
             }
-            AgentEvent::SessionEnded { success } => {
+            AgentEvent::SessionEnded { success, error } => {
                 out.push(3u8);
                 out.push(if *success { 1u8 } else { 0u8 });
+                if let Some(err_msg) = error {
+                    out.push(1u8);
+                    write_str16(&mut out, err_msg);
+                } else {
+                    out.push(0u8);
+                }
             }
             AgentEvent::SessionIDAvailable(id) => {
                 out.push(4u8);
@@ -914,6 +969,7 @@ pub mod prelude {
         AgentEvent, AgentExecutionTier,
         AgentMetadata, AgentProtocol, AgentSettingsField, AgentSettingsFieldKind, Diagnostic, ReviewActionCwdMode,
         ReviewActionDescriptor, ReviewActionExecutionPlan, ReviewActionKind, Severity,
+        StandardTool, AgentLaunchRequest, AgentWorkspaceFile, AgentLaunchPreparation,
         BASALT_PLUGIN_API_VERSION, CAP_AGENT_LAUNCHER, CAP_API_INDEX, CAP_CANVAS_DECO,
         CAP_CAPABILITY_HANDLE, CAP_CODE_ACTIONS, CAP_DIAGNOSTICS, CAP_EVENTS, CAP_FILE_TRANSFORM,
         CAP_HOVER, CAP_LAYOUT, CAP_PROJECT_MODEL, CAP_REVIEW_ACTIONS, CAP_SEMANTIC_FACTS,
