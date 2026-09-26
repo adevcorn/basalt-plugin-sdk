@@ -65,6 +65,12 @@ pub const CAP_SEMANTIC_FACTS: u64 = 1 << 16;
 /// Plugin exports `basalt_capability_handle` for native capability dispatch.
 pub const CAP_CAPABILITY_HANDLE: u64 = 1 << 17;
 
+/// Plugin provides build system / diagnostics provider capability.
+pub const CAP_BUILD_SYSTEM: u64 = 1 << 20;
+
+/// Plugin provides test runner capability.
+pub const CAP_TEST_RUNNER: u64 = 1 << 21;
+
 pub const BASALT_PLUGIN_API_VERSION: u32 = 1;
 
 // ── Capability invoke support ───────────────────────────────────────────────
