@@ -74,6 +74,9 @@ pub const CAP_TEST_RUNNER: u64 = 1 << 21;
 /// Plugin provides phantom WASM verification and benchmarking capability.
 pub const CAP_WASM_VERIFY: u64 = 1 << 22;
 
+/// Plugin provides autonomous swarm coordination strategy (e.g., tournament, pipeline, map-reduce).
+pub const CAP_SWARM_STRATEGY: u64 = 1 << 23;
+
 pub const BASALT_PLUGIN_API_VERSION: u32 = 1;
 
 // ── Capability invoke support ───────────────────────────────────────────────
@@ -983,7 +986,7 @@ pub mod prelude {
         CAP_CAPABILITY_HANDLE, CAP_CODE_ACTIONS, CAP_DIAGNOSTICS, CAP_EVENTS, CAP_FILE_TRANSFORM,
         CAP_HOVER, CAP_LAYOUT, CAP_PROJECT_MODEL, CAP_REVIEW_ACTIONS, CAP_SEMANTIC_FACTS,
         CAP_SEMANTIC_TOKENS, CAP_THEME, CAP_UI_PANELS, CAP_BUILD_SYSTEM, CAP_TEST_RUNNER,
-        CAP_WASM_VERIFY,
+        CAP_WASM_VERIFY, CAP_SWARM_STRATEGY,
         CHUNK_FLAG_TEST, CHUNK_VIS_INTERNAL, CHUNK_VIS_PRIVATE, CHUNK_VIS_PUBLIC,
         CHUNK_VIS_UNKNOWN, RETRIEVAL_CHUNK_BYTES_V2, RETRIEVAL_FLAGS_OFFSET_V2,
     };
