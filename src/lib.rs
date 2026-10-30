@@ -77,6 +77,14 @@ pub const CAP_WASM_VERIFY: u64 = 1 << 22;
 /// Plugin provides autonomous swarm coordination strategy (e.g., tournament, pipeline, map-reduce).
 pub const CAP_SWARM_STRATEGY: u64 = 1 << 23;
 
+/// Plugin provides a Tier-0 abstract-interpretation provider via
+/// `basalt_capability_handle("tier0", ...)`.
+pub const CAP_TIER0: u64 = 1 << 24;
+
+/// Plugin contributes workspace-relative glob patterns that should be
+/// excluded from shadow-workspace copies (build outputs, caches, binaries).
+pub const CAP_SHADOW_EXCLUDES: u64 = 1 << 25;
+
 pub const BASALT_PLUGIN_API_VERSION: u32 = 1;
 
 // ── Capability invoke support ───────────────────────────────────────────────
@@ -986,7 +994,7 @@ pub mod prelude {
         CAP_CAPABILITY_HANDLE, CAP_CODE_ACTIONS, CAP_DIAGNOSTICS, CAP_EVENTS, CAP_FILE_TRANSFORM,
         CAP_HOVER, CAP_LAYOUT, CAP_PROJECT_MODEL, CAP_REVIEW_ACTIONS, CAP_SEMANTIC_FACTS,
         CAP_SEMANTIC_TOKENS, CAP_THEME, CAP_UI_PANELS, CAP_BUILD_SYSTEM, CAP_TEST_RUNNER,
-        CAP_WASM_VERIFY, CAP_SWARM_STRATEGY,
+        CAP_WASM_VERIFY, CAP_SWARM_STRATEGY, CAP_TIER0, CAP_SHADOW_EXCLUDES,
         CHUNK_FLAG_TEST, CHUNK_VIS_INTERNAL, CHUNK_VIS_PRIVATE, CHUNK_VIS_PUBLIC,
         CHUNK_VIS_UNKNOWN, RETRIEVAL_CHUNK_BYTES_V2, RETRIEVAL_FLAGS_OFFSET_V2,
     };

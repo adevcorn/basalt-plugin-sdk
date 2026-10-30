@@ -43,6 +43,7 @@ pub fn basalt_plugin(_attr: TokenStream, item: TokenStream) -> TokenStream {
         "review_actions" => generate_review_actions_wrapper(&input),
         "review_action_plan" => generate_review_action_plan_wrapper(&input),
         "review_action_parse_line" => generate_review_action_parse_line_wrapper(&input),
+        "shadow_excludes" => generate_shadow_excludes_wrapper(&input),
         _ => {
             // Unknown name — emit the function unchanged with a compile_error.
             let msg = format!(
@@ -100,6 +101,31 @@ fn generate_build_project_model_wrapper(input: &ItemFn) -> proc_macro2::TokenStr
 
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn basalt_build_project_model(
+            root_ptr: i32,
+            root_len: i32,
+        ) -> u64 {
+            let root = unsafe {
+                core::str::from_utf8_unchecked(
+                    core::slice::from_raw_parts(root_ptr as *const u8, root_len as usize),
+                )
+            };
+            let data = #fn_name(root);
+            basalt_plugin_sdk::pack_output(data)
+        }
+    }
+}
+
+/// Generate the `basalt_shadow_excludes` export.
+///
+/// Expects: `fn shadow_excludes(root: &str) -> Vec<u8>` returning a JSON array
+/// of workspace-relative glob patterns.
+fn generate_shadow_excludes_wrapper(input: &ItemFn) -> proc_macro2::TokenStream {
+    let fn_name = &input.sig.ident;
+    quote! {
+        #input
+
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn basalt_shadow_excludes(
             root_ptr: i32,
             root_len: i32,
         ) -> u64 {
