@@ -44,11 +44,13 @@ pub fn basalt_plugin(_attr: TokenStream, item: TokenStream) -> TokenStream {
         "review_action_plan" => generate_review_action_plan_wrapper(&input),
         "review_action_parse_line" => generate_review_action_parse_line_wrapper(&input),
         "shadow_excludes" => generate_shadow_excludes_wrapper(&input),
+        "lexical_profile" => generate_lexical_profile_wrapper(&input),
+        "ext_aliases" => generate_ext_aliases_wrapper(&input),
         _ => {
             // Unknown name — emit the function unchanged with a compile_error.
             let msg = format!(
                 "#[basalt_plugin] does not recognise function name `{fn_name_str}`. \
-                 Supported names: diagnose, build_project_model, hover, agent_metadata, agent_environment, agent_parse_line, api_index, review_actions, review_action_plan, review_action_parse_line."
+                 Supported names: diagnose, build_project_model, hover, agent_metadata, agent_environment, agent_parse_line, api_index, review_actions, review_action_plan, review_action_parse_line, shadow_excludes, lexical_profile, ext_aliases."
             );
             quote! {
                 #input
@@ -388,3 +390,38 @@ fn generate_review_action_parse_line_wrapper(input: &ItemFn) -> proc_macro2::Tok
         }
     }
 }
+
+/// Generate the `basalt_lexical_profile` export.
+///
+/// Expects: `fn lexical_profile() -> &'static str` or `&'static [u8]` (must be null-terminated).
+/// Generates: `extern "C" fn basalt_lexical_profile() -> i32`
+fn generate_lexical_profile_wrapper(input: &ItemFn) -> proc_macro2::TokenStream {
+    let fn_name = &input.sig.ident;
+    quote! {
+        #input
+
+        #[unsafe(no_mangle)]
+        pub extern "C" fn basalt_lexical_profile() -> i32 {
+            let res = #fn_name();
+            res.as_ptr() as i32
+        }
+    }
+}
+
+/// Generate the `basalt_ext_aliases` export.
+///
+/// Expects: `fn ext_aliases() -> &'static str` or `&'static [u8]` (must be null-terminated).
+/// Generates: `extern "C" fn basalt_ext_aliases() -> i32`
+fn generate_ext_aliases_wrapper(input: &ItemFn) -> proc_macro2::TokenStream {
+    let fn_name = &input.sig.ident;
+    quote! {
+        #input
+
+        #[unsafe(no_mangle)]
+        pub extern "C" fn basalt_ext_aliases() -> i32 {
+            let res = #fn_name();
+            res.as_ptr() as i32
+        }
+    }
+}
+

@@ -939,6 +939,70 @@ macro_rules! basalt_plugin_meta {
     };
 }
 
+// ── basalt_lexical_profile! declarative macro ────────────────────────────────
+
+/// Export a static, null-terminated JSON lexical profile for the Phantom Safety Net.
+///
+/// # Example
+///
+/// ```ignore
+/// use basalt_plugin_sdk::basalt_lexical_profile;
+///
+/// basalt_lexical_profile!(r#"{
+///     "version": 1,
+///     "line_comments": ["//"],
+///     "block_comment": ["/*", "*/"],
+///     "strings": [
+///         {"open": "\"", "close": "\""},
+///         {"open": "'", "close": "'"}
+///     ]
+/// }"#);
+/// ```
+#[macro_export]
+macro_rules! basalt_lexical_profile {
+    ($json:literal) => {
+        static __BASALT_LEXICAL_PROFILE: &[u8] = concat!($json, "\0").as_bytes();
+
+        #[unsafe(no_mangle)]
+        pub extern "C" fn basalt_lexical_profile() -> *const u8 {
+            __BASALT_LEXICAL_PROFILE.as_ptr()
+        }
+    };
+    ($json:expr) => {
+        static __BASALT_LEXICAL_PROFILE: &[u8] = concat!($json, "\0").as_bytes();
+
+        #[unsafe(no_mangle)]
+        pub extern "C" fn basalt_lexical_profile() -> *const u8 {
+            __BASALT_LEXICAL_PROFILE.as_ptr()
+        }
+    };
+}
+
+// ── basalt_ext_aliases! declarative macro ────────────────────────────────────
+
+/// Export extension aliases for a parser plugin.
+///
+/// # Example
+///
+/// ```ignore
+/// use basalt_plugin_sdk::basalt_ext_aliases;
+///
+/// basalt_ext_aliases!("tsx:ts\nmts:ts\ncts:ts\n");
+/// ```
+#[macro_export]
+macro_rules! basalt_ext_aliases {
+    ($aliases:literal) => {
+        static __BASALT_EXT_ALIASES: &[u8] = concat!($aliases, "\0").as_bytes();
+
+        #[unsafe(no_mangle)]
+        pub extern "C" fn basalt_ext_aliases() -> *const u8 {
+            __BASALT_EXT_ALIASES.as_ptr()
+        }
+    };
+}
+
+pub mod lexical;
+
 // ── Retrieval-chunk v2 contract (visibility / test flags) ────────────────────
 //
 // Mirrors the host-side contract in `basalt-core/src/parser.rs` and
@@ -977,6 +1041,9 @@ pub fn encode_chunk_flags(visibility: u8, is_test: bool) -> u8 {
 pub mod prelude {
     pub use crate::basalt_plugin;
     pub use crate::basalt_plugin_meta;
+    pub use crate::basalt_lexical_profile;
+    pub use crate::basalt_ext_aliases;
+    pub use crate::lexical::{LexicalProfile, StringSpec, SpecialLexeme, LEXICAL_PROFILE_VERSION};
     pub use crate::facts::{
         serialize_facts, deserialize_facts, SemanticFact, SymbolKind, MutationTarget, MutationKind,
         ControlFlowKind, IOKind, AsyncBoundaryKind, MAGIC, VERSION,
@@ -1093,6 +1160,31 @@ mod tests {
         assert_eq!(CapabilityInvokeError::DependencyCycle as i64, -5);
         assert_eq!(CapabilityInvokeError::DependencyMissing as i64, -6);
         assert_eq!(CapabilityInvokeError::InvalidRequest as i64, -7);
+    }
+
+    mod test_macro_exports {
+        basalt_lexical_profile!(r#"{"version":1,"line_comments":["//"]}"#);
+        basalt_ext_aliases!("tsx:ts\nmts:ts\n");
+
+        #[test]
+        fn test_macro_lexical_profile_export() {
+            let ptr = basalt_lexical_profile();
+            assert!(!ptr.is_null());
+            let s = unsafe { core::ffi::CStr::from_ptr(ptr as *const core::ffi::c_char) };
+            let str_val = s.to_str().unwrap();
+            assert!(str_val.contains("\"version\":1"));
+            assert!(str_val.contains("\"line_comments\":[\"//\"]"));
+        }
+
+        #[test]
+        fn test_macro_ext_aliases_export() {
+            let ptr = basalt_ext_aliases();
+            assert!(!ptr.is_null());
+            let s = unsafe { core::ffi::CStr::from_ptr(ptr as *const core::ffi::c_char) };
+            let str_val = s.to_str().unwrap();
+            assert!(str_val.contains("tsx:ts"));
+            assert!(str_val.contains("mts:ts"));
+        }
     }
 }
 
