@@ -18,6 +18,8 @@
 //! | `review_actions`       | `basalt_review_actions`       | `(root_ptr, root_len, workspace_ptr, workspace_len: i32) -> u64`                 |
 //! | `review_action_plan`   | `basalt_review_action_plan`   | `(action_ptr, action_len, root_ptr, root_len, workspace_ptr, workspace_len: i32) -> u64` |
 //! | `review_action_parse_line` | `basalt_review_action_parse_line` | `(action_ptr, action_len, line_ptr, line_len, state_ptr, state_len: i32) -> u64` |
+//! | `shadow_excludes`      | `basalt_shadow_excludes`      | `(root_ptr, root_len: i32) -> u64`                                               |
+//! | `shadow_symlinks`      | `basalt_shadow_symlinks`      | `(root_ptr, root_len: i32) -> u64`                                               |
 //!
 //! All generated wrappers call the decorated function with decoded Rust types
 //! and pack the return value via `basalt_plugin_sdk::pack_output`.
@@ -44,13 +46,14 @@ pub fn basalt_plugin(_attr: TokenStream, item: TokenStream) -> TokenStream {
         "review_action_plan" => generate_review_action_plan_wrapper(&input),
         "review_action_parse_line" => generate_review_action_parse_line_wrapper(&input),
         "shadow_excludes" => generate_shadow_excludes_wrapper(&input),
+        "shadow_symlinks" => generate_shadow_symlinks_wrapper(&input),
         "lexical_profile" => generate_lexical_profile_wrapper(&input),
         "ext_aliases" => generate_ext_aliases_wrapper(&input),
         _ => {
             // Unknown name — emit the function unchanged with a compile_error.
             let msg = format!(
                 "#[basalt_plugin] does not recognise function name `{fn_name_str}`. \
-                 Supported names: diagnose, build_project_model, hover, agent_metadata, agent_environment, agent_parse_line, api_index, review_actions, review_action_plan, review_action_parse_line, shadow_excludes, lexical_profile, ext_aliases."
+                 Supported names: diagnose, build_project_model, hover, agent_metadata, agent_environment, agent_parse_line, api_index, review_actions, review_action_plan, review_action_parse_line, shadow_excludes, shadow_symlinks, lexical_profile, ext_aliases."
             );
             quote! {
                 #input
@@ -128,6 +131,32 @@ fn generate_shadow_excludes_wrapper(input: &ItemFn) -> proc_macro2::TokenStream 
 
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn basalt_shadow_excludes(
+            root_ptr: i32,
+            root_len: i32,
+        ) -> u64 {
+            let root = unsafe {
+                core::str::from_utf8_unchecked(
+                    core::slice::from_raw_parts(root_ptr as *const u8, root_len as usize),
+                )
+            };
+            let data = #fn_name(root);
+            basalt_plugin_sdk::pack_output(data)
+        }
+    }
+}
+
+/// Generate the `basalt_shadow_symlinks` export.
+///
+/// Expects: `fn shadow_symlinks(root: &str) -> Vec<u8>` returning a JSON array
+/// of workspace-relative paths or glob patterns to link from the host workspace
+/// instead of deep-copying (installed dependency trees).
+fn generate_shadow_symlinks_wrapper(input: &ItemFn) -> proc_macro2::TokenStream {
+    let fn_name = &input.sig.ident;
+    quote! {
+        #input
+
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn basalt_shadow_symlinks(
             root_ptr: i32,
             root_len: i32,
         ) -> u64 {

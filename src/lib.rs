@@ -44,6 +44,10 @@
 
 // ── Capability flag constants ───────────────────────────────────────────────
 
+// Allow macro-generated wrappers (which refer to `basalt_plugin_sdk::...`) to
+// compile inside this crate's own tests.
+extern crate self as basalt_plugin_sdk;
+
 pub const CAP_DIAGNOSTICS: u64 = 1 << 0;
 pub const CAP_CODE_ACTIONS: u64 = 1 << 1;
 pub const CAP_CANVAS_DECO: u64 = 1 << 2;
@@ -84,6 +88,14 @@ pub const CAP_TIER0: u64 = 1 << 24;
 /// Plugin contributes workspace-relative glob patterns that should be
 /// excluded from shadow-workspace copies (build outputs, caches, binaries).
 pub const CAP_SHADOW_EXCLUDES: u64 = 1 << 25;
+
+/// Plugin contributes workspace-relative paths (or glob patterns) that a
+/// shadow workspace should link to the host instead of deep-copying — typically
+/// installed dependency trees such as `node_modules`, `vendor`, or `Pods`.
+///
+/// Core resolves and links the paths, records them in the shadow metadata, and
+/// unlinks them on teardown. The paths are also treated as copy exclusions.
+pub const CAP_SHADOW_SYMLINKS: u64 = 1 << 26;
 
 pub const BASALT_PLUGIN_API_VERSION: u32 = 1;
 
@@ -1061,7 +1073,7 @@ pub mod prelude {
         CAP_CAPABILITY_HANDLE, CAP_CODE_ACTIONS, CAP_DIAGNOSTICS, CAP_EVENTS, CAP_FILE_TRANSFORM,
         CAP_HOVER, CAP_LAYOUT, CAP_PROJECT_MODEL, CAP_REVIEW_ACTIONS, CAP_SEMANTIC_FACTS,
         CAP_SEMANTIC_TOKENS, CAP_THEME, CAP_UI_PANELS, CAP_BUILD_SYSTEM, CAP_TEST_RUNNER,
-        CAP_WASM_VERIFY, CAP_SWARM_STRATEGY, CAP_TIER0, CAP_SHADOW_EXCLUDES,
+        CAP_WASM_VERIFY, CAP_SWARM_STRATEGY, CAP_TIER0, CAP_SHADOW_EXCLUDES, CAP_SHADOW_SYMLINKS,
         CHUNK_FLAG_TEST, CHUNK_VIS_INTERNAL, CHUNK_VIS_PRIVATE, CHUNK_VIS_PUBLIC,
         CHUNK_VIS_UNKNOWN, RETRIEVAL_CHUNK_BYTES_V2, RETRIEVAL_FLAGS_OFFSET_V2,
     };
@@ -1080,6 +1092,14 @@ mod tests {
         assert_eq!(CAP_CAPABILITY_HANDLE, 1 << 17);
         // Verify no overlap with existing flags (0-16 occupied)
         assert!(CAP_CAPABILITY_HANDLE > CAP_API_INDEX);
+    }
+
+    #[test]
+    fn cap_shadow_flags_are_distinct() {
+        assert_eq!(CAP_SHADOW_EXCLUDES, 1 << 25);
+        assert_eq!(CAP_SHADOW_SYMLINKS, 1 << 26);
+        assert_eq!(CAP_SHADOW_EXCLUDES & CAP_SHADOW_SYMLINKS, 0);
+        assert!(CAP_SHADOW_SYMLINKS > CAP_SHADOW_EXCLUDES);
     }
 
     #[test]
@@ -1163,8 +1183,17 @@ mod tests {
     }
 
     mod test_macro_exports {
+        use crate::basalt_plugin;
+
         basalt_lexical_profile!(r#"{"version":1,"line_comments":["//"]}"#);
         basalt_ext_aliases!("tsx:ts\nmts:ts\n");
+
+        // Compile-time coverage for the shadow_symlinks export wrapper.
+        #[allow(dead_code)]
+        #[basalt_plugin]
+        fn shadow_symlinks(_root: &str) -> Vec<u8> {
+            br#"["node_modules"]"#.to_vec()
+        }
 
         #[test]
         fn test_macro_lexical_profile_export() {
